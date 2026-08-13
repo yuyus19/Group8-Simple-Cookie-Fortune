@@ -27,11 +27,11 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
 
-      - name: Install Go 1.21
+      - name: Install Go 1.24
         id: setup-go
         uses: actions/setup-go@v7
         with:
-          go-version: '1.21.x'
+          go-version: '1.24.x'
           cache-dependency-path: |
             backend/go.sum
             frontend/go.mod
@@ -40,9 +40,9 @@ jobs:
         run: go version
 
       - name: Reject an unexpected Go version
-        if: ${{ !startsWith(steps.setup-go.outputs.go-version, '1.21.') }}
+        if: ${{ !startsWith(steps.setup-go.outputs.go-version, '1.24.') }}
         run: |
-          echo "Expected Go 1.21.x but found ${{ steps.setup-go.outputs.go-version }}"
+          echo "Expected Go 1.24.x but found ${{ steps.setup-go.outputs.go-version }}"
           exit 1
 
       - name: Build backend
