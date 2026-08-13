@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build and test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install Go 1.24
+        id: setup-go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.24.x'
+          cache-dependency-path: |
+            backend/go.sum
+            frontend/go.mod
+
+      - name: Display Go version
+        run: go version
+
+      - name: Reject an unexpected Go version
+        if: ${{ !startsWith(steps.setup-go.outputs.go-version, '1.24.') }}
+        run: |
+          echo "Expected Go 1.24.x but found ${{ steps.setup-go.outputs.go-version }}"
+          exit 1
+
+      - name: Build backend
+        working-directory: backend
+        run: go build ./...
+
+      - name: Test backend
+        working-directory: backend
+        run: go test ./...
+
+      - name: Build frontend
+        working-directory: frontend
+        run: go build ./...
+
+      - name: Test frontend
+        working-directory: frontend
+        run: go test ./...
+
+  cross-platform-ci:
+    name: Cross-platform CI
+    if: ${{ always() }}
+    needs:
+      - build-and-test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Confirm every platform passed
+        if: ${{ needs.build-and-test.result == 'success' }}
+        run: echo "Linux, Windows, and macOS checks passed."
+
+      - name: Fail if any platform failed
+        if: ${{ needs.build-and-test.result != 'success' }}
+        run: exit 1
