@@ -1,0 +1,7 @@
+# Locally built binaries -- never ship these into the build context.
+frontend
+frontend.exe
+
+Dockerfile
+.dockerignore
+README.md
