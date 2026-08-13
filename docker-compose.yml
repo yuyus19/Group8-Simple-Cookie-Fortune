@@ -1,0 +1,40 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    image: simple-fortune-backend:1.0.0
+    restart: unless-stopped
+    expose:
+      - "9000"
+    healthcheck:
+      # The backend has no /healthz yet, so we use a real endpoint instead.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:9000/fortunes"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  frontend:
+    build:
+      context: ./frontend
+    image: simple-fortune-frontend:1.0.0
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # Service name resolves over the compose network, so this is all the
+      # frontend needs to find the backend.
+      BACKEND_DNS: backend
+      BACKEND_PORT: "9000"
+    depends_on:
+      # Not just "started". The frontend handlers call log.Fatalln() when a
+      # request to the backend fails, which kills the whole process, so it must
+      # not come up until the backend is actually answering.
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
