@@ -1,0 +1,98 @@
+# Redis, the fix for 04-database.
+#
+# The complaint was that cookies disappear when a new version is released.
+# They did, because backend/foredis.go falls back to an in memory map when
+# REDIS_DNS is unset, and a Deployment rollout replaces the pod and therefore
+# the map. Giving the backend a real datastore is what makes a fortune outlive
+# the pod that created it.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-data
+  namespace: fortune
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/part-of: cookie-fortune
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: fortune
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/part-of: cookie-fortune
+spec:
+  replicas: 1
+  strategy:
+    # A ReadWriteOnce volume attaches to one pod at a time, so the old pod has
+    # to be gone before the new one starts. A RollingUpdate would sit forever
+    # waiting for a second pod that can never mount the disk.
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redis
+        app.kubernetes.io/part-of: cookie-fortune
+    spec:
+      containers:
+        - name: redis
+          image: redis:7.2-alpine
+          args: ["--appendonly", "yes"]
+          ports:
+            - name: redis
+              containerPort: 6379
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            tcpSocket:
+              port: redis
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 256Mi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: redis-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: fortune
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/part-of: cookie-fortune
+spec:
+  # ClusterIP, because only the backend talks to it. The name "redis" is what
+  # in cluster DNS resolves, which is why the backend's REDIS_DNS can just say
+  # "redis" exactly like it does in docker-compose.yml.
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis
