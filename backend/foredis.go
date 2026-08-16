@@ -2,15 +2,63 @@ package main
 
 import (
 	"fmt"
-	"github.com/gomodule/redigo/redis"
 	"log"
+	"os"
 	"sync"
 	"time"
-	"os"
+
+	"github.com/gomodule/redigo/redis"
 )
 
-var dbLink redis.Conn
+var dbPool *redis.Pool
 var usingRedis = false
+
+// newRedisPool builds the connection pool.
+//
+// This used to be one long lived redis.Conn shared by every request, which had
+// two problems. A redigo connection is not safe for concurrent use, so two
+// requests at once could interleave and garble the protocol, and once that
+// single connection dropped it stayed dropped for the life of the process. So
+// if Redis restarted, the backend never came back on its own.
+//
+// A pool fixes both. Each request borrows a connection and gives it back, and
+// a broken one is replaced on the next dial. That is what makes the "database
+// becomes unavailable" case in 05-bon-appetit recover by itself, and it is
+// also what makes it safe to run more than one backend replica.
+func newRedisPool(addr string) *redis.Pool {
+	return &redis.Pool{
+		MaxIdle:     4,
+		MaxActive:   16,
+		IdleTimeout: 240 * time.Second,
+		Wait:        true,
+		Dial: func() (redis.Conn, error) {
+			return redis.Dial("tcp", addr,
+				redis.DialConnectTimeout(3*time.Second),
+				redis.DialReadTimeout(3*time.Second),
+				redis.DialWriteTimeout(3*time.Second),
+			)
+		},
+		// Without this a request can be handed a connection that quietly died
+		// while it was sitting idle in the pool.
+		TestOnBorrow: func(c redis.Conn, since time.Time) error {
+			if time.Since(since) < time.Minute {
+				return nil
+			}
+			_, err := c.Do("PING")
+			return err
+		},
+	}
+}
+
+// redisDo runs a single command on a borrowed connection.
+func redisDo(command string, args ...interface{}) (interface{}, error) {
+	if !usingRedis || dbPool == nil {
+		return nil, fmt.Errorf("redis is not configured")
+	}
+	conn := dbPool.Get()
+	defer conn.Close()
+	return conn.Do(command, args...)
+}
 
 func init() {
 	// Check if REDIS_DNS environment variable is set
@@ -18,9 +66,14 @@ func init() {
 		fmt.Println("redis config not set")
 		return
 	}
-	var err error
+
+	addr := fmt.Sprintf("%s:6379", getEnv("REDIS_DNS", "localhost"))
+	dbPool = newRedisPool(addr)
+
 	for i := 0; i < 5; i++ {
-		dbLink, err = redis.Dial("tcp", fmt.Sprintf("%s:6379", getEnv("REDIS_DNS", "localhost")))
+		conn := dbPool.Get()
+		_, err := conn.Do("PING")
+		conn.Close()
 		if err == nil {
 			usingRedis = true
 			break
@@ -34,7 +87,7 @@ func init() {
 		return
 	}
 
-	resKeys, err := redis.Values(dbLink.Do("hkeys", "fortunes"))
+	resKeys, err := redis.Values(redisDo("hkeys", "fortunes"))
 	if err != nil {
 		fmt.Println("redis hkeys failed", err.Error())
 		return
@@ -49,7 +102,7 @@ func init() {
 	if len(resKeys) == 0 {
 		fmt.Printf("*** redis has no fortunes, seeding it with the built in set\n")
 		for id, f := range datastoreDefault.m {
-			if _, err := dbLink.Do("hset", "fortunes", id, f.Message); err != nil {
+			if _, err := redisDo("hset", "fortunes", id, f.Message); err != nil {
 				fmt.Println("redis hset failed", err.Error())
 				return
 			}
@@ -61,7 +114,7 @@ func init() {
 	datastoreDefault = datastore{m: map[string]fortune{}, RWMutex: &sync.RWMutex{}}
 	fmt.Printf("*** loading redis fortunes:\n")
 	for _, key := range resKeys {
-		val, err := dbLink.Do("hget", "fortunes", key)
+		val, err := redisDo("hget", "fortunes", key)
 		if err != nil {
 			fmt.Println("redis hget failed", err.Error())
 		} else {
