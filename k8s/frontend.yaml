@@ -1,0 +1,90 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: fortune
+  labels:
+    app.kubernetes.io/name: frontend
+    app.kubernetes.io/part-of: cookie-fortune
+spec:
+  # The frontend holds no state, so this one is safe to scale.
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: frontend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: frontend
+        app.kubernetes.io/part-of: cookie-fortune
+    spec:
+      containers:
+        - name: frontend
+          image: docker.io/jimdaf/cookie-fortune-group08-frontend:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            # "backend" is the Service name above. Kubernetes DNS resolves it
+            # within this namespace, the same way the compose network resolved
+            # the service name.
+            - name: BACKEND_DNS
+              value: backend
+            - name: BACKEND_PORT
+              value: "9000"
+          # Compose could express "do not start until the backend is healthy".
+          # Kubernetes has no such ordering: pods start in any order, and the
+          # frontend's handlers call log.Fatalln() when the backend is missing,
+          # which kills the process. The fix is not ordering but restarts -- the
+          # kubelet restarts the container until the backend answers. Expect a
+          # few CrashLoopBackOff cycles on a cold start; it converges.
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          securityContext:
+            # See the note in backend.yaml: "USER app" is not numeric, so the
+            # uid has to be restated here for runAsNonRoot to be enforceable.
+            runAsUser: 10001
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: fortune
+  labels:
+    app.kubernetes.io/name: frontend
+    app.kubernetes.io/part-of: cookie-fortune
+spec:
+  # NodePort, because this is the one piece that has to be reachable from
+  # outside. 30080 is wired to localhost:8081 by k8s/kind-cluster.yaml.
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: frontend
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      nodePort: 30080
