@@ -1,0 +1,88 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: fortune
+  labels:
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/part-of: cookie-fortune
+spec:
+  # Deliberately 1. The backend keeps fortunes in an in-memory map (see
+  # backend/main.go, datastoreDefault) whenever REDIS_DNS is unset, so every
+  # replica would own a different set and POST /fortunes would land on
+  # whichever pod the Service happened to pick. Scale this only after the
+  # database exercise gives it shared state.
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: backend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: backend
+        app.kubernetes.io/part-of: cookie-fortune
+    spec:
+      containers:
+        - name: backend
+          image: docker.io/jimdaf/cookie-fortune-group08-backend:latest
+          # The workers have no local copy of this image, so it is always
+          # pulled from Docker Hub. With a moving tag like :latest, Always
+          # avoids serving a stale cached layer after a new push.
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 9000
+          # The backend has no /healthz, so a real endpoint stands in. This
+          # mirrors the healthcheck already in docker-compose.yml.
+          readinessProbe:
+            httpGet:
+              path: /fortunes
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /fortunes
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          securityContext:
+            # The Dockerfile says "USER app", a name. Kubernetes only resolves
+            # numeric ids, so with runAsNonRoot alone the kubelet refuses the
+            # container: "image has non-numeric user (app), cannot verify user
+            # is non-root". Restating the uid from the Dockerfile's
+            # "adduser -D -u 10001 app" is what makes it startable.
+            runAsUser: 10001
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: fortune
+  labels:
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/part-of: cookie-fortune
+spec:
+  # ClusterIP: reachable only inside the cluster, which is all the frontend
+  # needs. The name "backend" is what in-cluster DNS resolves, so the
+  # frontend's BACKEND_DNS can stay exactly as it is in docker-compose.yml.
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: backend
+  ports:
+    - name: http
+      port: 9000
+      targetPort: http

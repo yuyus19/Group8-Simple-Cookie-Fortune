@@ -1,0 +1,25 @@
+# Cluster definition for local development.
+#
+#   kind create cluster --config k8s/kind-cluster.yaml
+#
+# Two workers so the scheduler actually has somewhere to choose between, which
+# makes "kubectl get pods -o wide" worth looking at.
+#
+# extraPortMappings is the only way into a kind cluster from the host without
+# an ingress controller: it forwards a port on the control-plane container to
+# localhost. NodePort 30080 (the frontend Service) becomes localhost:8081.
+#
+# Host port is 8081, not 8080, so this does not collide with the docker compose
+# stack if you happen to have it running at the same time.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: fortune-cookie
+
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - containerPort: 30080
+        hostPort: 8081
+        protocol: TCP
+  - role: worker
+  - role: worker
