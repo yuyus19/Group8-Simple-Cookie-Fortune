@@ -61,18 +61,63 @@ jobs:
         working-directory: frontend
         run: go test ./...
 
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - backend
+          - frontend
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.24.x'
+          cache-dependency-path: ${{ matrix.service }}/go.sum
+
+      - name: Check the code is formatted
+        working-directory: ${{ matrix.service }}
+        run: |
+          # gofmt does not set an exit code, it just lists what it would
+          # change, so an empty list is what "passing" looks like.
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt clean:"
+            echo "$unformatted"
+            echo
+            echo "Run 'make fmt' and commit the result."
+            exit 1
+          fi
+          echo "all files are gofmt clean"
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          working-directory: ${{ matrix.service }}
+
   cross-platform-ci:
     name: Cross-platform CI
     if: ${{ always() }}
     needs:
       - build-and-test
+      - lint
     runs-on: ubuntu-latest
 
     steps:
       - name: Confirm every platform passed
-        if: ${{ needs.build-and-test.result == 'success' }}
-        run: echo "Linux, Windows, and macOS checks passed."
+        if: ${{ needs.build-and-test.result == 'success' && needs.lint.result == 'success' }}
+        run: echo "Linux, Windows, and macOS checks passed, and the linter is happy."
 
       - name: Fail if any platform failed
-        if: ${{ needs.build-and-test.result != 'success' }}
-        run: exit 1
+        if: ${{ needs.build-and-test.result != 'success' || needs.lint.result != 'success' }}
+        run: |
+          echo "build-and-test: ${{ needs.build-and-test.result }}"
+          echo "lint:           ${{ needs.lint.result }}"
+          exit 1

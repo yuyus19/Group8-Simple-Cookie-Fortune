@@ -1,0 +1,37 @@
+# golangci-lint configuration, shared by the backend and the frontend module.
+#
+# The config lives at the repository root and golangci-lint searches upward,
+# so running it from either service directory picks this up.
+
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  # The standard set: errcheck, govet, ineffassign, staticcheck and unused.
+  default: standard
+  enable:
+    - misspell
+
+  settings:
+    errcheck:
+      # Writing to an http.ResponseWriter returns an error that essentially
+      # nobody checks, because there is nothing useful to do about it: the
+      # response is already on its way out. Checking these would mean noise
+      # on every handler in the codebase for no benefit.
+      exclude-functions:
+        - (net/http.ResponseWriter).Write
+        - (net/http.ResponseWriter).WriteHeader
+        - fmt.Fprint
+        - fmt.Fprintf
+        - io.WriteString
+
+  exclusions:
+    presets:
+      - std-error-handling
+    rules:
+      # The test helpers read a body into a fixed buffer on purpose.
+      - path: _test\.go
+        linters:
+          - errcheck

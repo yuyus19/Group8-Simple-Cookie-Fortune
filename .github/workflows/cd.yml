@@ -3,6 +3,11 @@ name: CD
 # Continuous delivery. Takes the images that publish.yml pushed to Docker Hub
 # and puts them on a Kubernetes cluster.
 #
+# The pipeline is staging first, then production, and production only happens
+# if the functional tests passed against staging. That is the "deploy to
+# production if functional tests pass" item from 05-bon-appetit: the smoke
+# tests are a gate, not a report.
+#
 # Which cluster depends on whether a KUBECONFIG secret exists:
 #
 #   secret set     deploy to that cluster, which is the real thing the
@@ -12,7 +17,7 @@ name: CD
 #                  end to end on every push
 #
 # Adding the secret later switches it over with no change to this file. To
-# create it, run this on a machine that can reach the cluster:
+# create it run scripts/set-kubeconfig-secret.sh, or by hand:
 #
 #   cat ~/.kube/config | base64 -w0
 #
@@ -40,7 +45,7 @@ permissions:
 
 jobs:
   deploy:
-    name: Deploy to Kubernetes
+    name: Deploy and verify
     runs-on: ubuntu-latest
 
     steps:
@@ -67,26 +72,19 @@ jobs:
           cluster_name: fortune-cookie
           config: k8s/kind-cluster.yaml
 
-      - name: Deploy
-        id: deploy
+      # ---------------------------------------------------------- staging ---
+
+      - name: Deploy to staging
+        id: staging
         env:
-          # Empty when the secret does not exist, and the script then falls
-          # back to whatever context kubectl already has, which is the kind
-          # cluster created above.
           KUBECONFIG_B64: ${{ secrets.KUBECONFIG }}
-          BRANCH: ${{ github.ref_name }}
+          ENVIRONMENT: staging
           IMAGE_TAG: latest
         run: ./scripts/deploy.sh
 
-      - name: Smoke test the deployment
+      - name: Smoke test staging
         env:
-          NS: ${{ steps.deploy.outputs.namespace }}
-          # A tollgate by default. The exercise asks whether this should block
-          # or merely inform, and blocking is the right default here: these
-          # tests only fail when the app is genuinely broken, and shipping a
-          # broken deploy is worse than a red build. The workflow_dispatch
-          # input exists for the times you need to deploy anyway and look at
-          # the failures afterwards.
+          NS: ${{ steps.staging.outputs.namespace }}
           SOFT_FAIL: ${{ inputs.soft_fail && 'true' || 'false' }}
           BASE_URL: http://localhost:18080
           WAIT_SECONDS: "90"
@@ -100,11 +98,65 @@ jobs:
 
           ./scripts/smoke-test.sh
 
-      - name: Show what was deployed
-        if: always()
+      - name: Load test staging with siege
+        # Informational rather than a gate. Runner performance varies a lot
+        # between runs, so a slow agent should not block a release, but a
+        # sudden drop in availability is worth having in the log.
+        continue-on-error: true
         env:
-          NS: ${{ steps.deploy.outputs.namespace }}
+          NS: ${{ steps.staging.outputs.namespace }}
+          BASE_URL: http://localhost:18081
+          CONCURRENT: "25"
+          DURATION: 20S
         run: |
-          echo "environment: ${{ steps.deploy.outputs.environment }}"
-          echo "namespace:   $NS"
-          kubectl -n "$NS" get deployments,services,pods -o wide || true
+          kubectl -n "$NS" port-forward svc/frontend 18081:8080 &
+          PF=$!
+          trap 'kill $PF 2>/dev/null || true' EXIT
+          sleep 3
+
+          ./scripts/stress-test.sh
+
+      # ------------------------------------------------------- production ---
+
+      # Only main reaches production, and only because every step above
+      # succeeded. A failed smoke test stops the job before this point, which
+      # is exactly the gate the exercise asks for.
+      - name: Deploy to production
+        id: production
+        if: ${{ github.ref == 'refs/heads/main' }}
+        env:
+          KUBECONFIG_B64: ${{ secrets.KUBECONFIG }}
+          ENVIRONMENT: production
+          IMAGE_TAG: latest
+        run: ./scripts/deploy.sh
+
+      - name: Smoke test production
+        if: ${{ github.ref == 'refs/heads/main' }}
+        env:
+          NS: ${{ steps.production.outputs.namespace }}
+          SOFT_FAIL: ${{ inputs.soft_fail && 'true' || 'false' }}
+          BASE_URL: http://localhost:18082
+          WAIT_SECONDS: "90"
+        run: |
+          kubectl -n "$NS" port-forward svc/frontend 18082:8080 &
+          PF=$!
+          trap 'kill $PF 2>/dev/null || true' EXIT
+
+          ./scripts/smoke-test.sh
+
+      # If production went out and then failed its tests, put the previous
+      # version back instead of leaving it broken while somebody investigates.
+      - name: Roll production back if its smoke tests failed
+        if: ${{ failure() && github.ref == 'refs/heads/main' && steps.production.outcome == 'success' }}
+        env:
+          KUBECONFIG_B64: ${{ secrets.KUBECONFIG }}
+          ENVIRONMENT: production
+        run: ./scripts/rollback.sh
+
+      - name: Show what was deployed
+        if: ${{ always() }}
+        run: |
+          echo "staging namespace:    ${{ steps.staging.outputs.namespace }}"
+          echo "production namespace: ${{ steps.production.outputs.namespace }}"
+          kubectl get deployments,pods --all-namespaces \
+            -l app.kubernetes.io/part-of=cookie-fortune -o wide || true
