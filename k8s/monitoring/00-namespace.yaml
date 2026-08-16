@@ -1,0 +1,12 @@
+# Its own file, named so it sorts first.
+#
+# "kubectl apply -f k8s/monitoring/" works through the directory
+# alphabetically, so with the namespace declared inside prometheus.yaml the
+# grafana objects were attempted first and failed with "namespaces monitoring
+# not found".
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+  labels:
+    app.kubernetes.io/part-of: cookie-fortune

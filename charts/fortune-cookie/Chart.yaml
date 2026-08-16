@@ -1,0 +1,19 @@
+apiVersion: v2
+name: fortune-cookie
+description: Simple Fortune Cookie, a frontend, a backend and a Redis to remember the cookies
+type: application
+
+# The chart's own version. Bump this when the templates change.
+version: 1.0.0
+
+# The version of the app being deployed. Overridden per release with
+# --set image.tag=sha-1a2b3c4
+appVersion: "1.0.0"
+
+keywords:
+  - fortune
+  - devops
+  - example
+
+maintainers:
+  - name: Group 8
