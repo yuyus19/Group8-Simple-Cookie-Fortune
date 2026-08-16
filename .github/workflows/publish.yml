@@ -104,7 +104,7 @@ jobs:
           echo "image=$(echo '${{ steps.meta.outputs.tags }}' | head -1)" >> "$GITHUB_OUTPUT"
 
       - name: Scan the image with Trivy
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ steps.scan_target.outputs.image }}
           format: sarif
@@ -127,7 +127,7 @@ jobs:
 
       - name: Show the findings in the log as well
         if: ${{ always() }}
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ steps.scan_target.outputs.image }}
           format: table

@@ -57,13 +57,28 @@ jobs:
         env:
           KUBECONFIG_SECRET: ${{ secrets.KUBECONFIG }}
         run: |
-          if [ -n "$KUBECONFIG_SECRET" ]; then
-            echo "have_kubeconfig=true" >> "$GITHUB_OUTPUT"
-            echo "Deploying to the cluster in the KUBECONFIG secret."
-          else
+          if [ -z "$KUBECONFIG_SECRET" ]; then
             echo "have_kubeconfig=false" >> "$GITHUB_OUTPUT"
             echo "No KUBECONFIG secret, so a kind cluster will be created here."
+            exit 0
           fi
+
+          # Having the secret is not the same as being able to use it. A
+          # kubeconfig for Docker Desktop or a local kind cluster points at an
+          # address that only resolves on that machine, so check before
+          # committing to it rather than failing halfway through a deploy.
+          printf '%s' "$KUBECONFIG_SECRET" | base64 -d > /tmp/probe-kubeconfig
+          chmod 600 /tmp/probe-kubeconfig
+
+          if kubectl --kubeconfig /tmp/probe-kubeconfig cluster-info --request-timeout=15s >/dev/null 2>&1; then
+            echo "have_kubeconfig=true" >> "$GITHUB_OUTPUT"
+            echo "The KUBECONFIG secret works, deploying to that cluster."
+          else
+            echo "have_kubeconfig=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=KUBECONFIG unreachable::The KUBECONFIG secret exists but this runner cannot reach that cluster, so a throwaway kind cluster is being used instead. A kubeconfig for Docker Desktop or a local kind cluster can never work from a GitHub runner, it has to be a cluster with an address the internet can reach."
+          fi
+
+          rm -f /tmp/probe-kubeconfig
 
       - name: Create a throwaway kind cluster
         if: ${{ steps.target.outputs.have_kubeconfig == 'false' }}
@@ -77,7 +92,7 @@ jobs:
       - name: Deploy to staging
         id: staging
         env:
-          KUBECONFIG_B64: ${{ secrets.KUBECONFIG }}
+          KUBECONFIG_B64: ${{ steps.target.outputs.have_kubeconfig == 'true' && secrets.KUBECONFIG || '' }}
           ENVIRONMENT: staging
           IMAGE_TAG: latest
         run: ./scripts/deploy.sh
@@ -125,7 +140,7 @@ jobs:
         id: production
         if: ${{ github.ref == 'refs/heads/main' }}
         env:
-          KUBECONFIG_B64: ${{ secrets.KUBECONFIG }}
+          KUBECONFIG_B64: ${{ steps.target.outputs.have_kubeconfig == 'true' && secrets.KUBECONFIG || '' }}
           ENVIRONMENT: production
           IMAGE_TAG: latest
         run: ./scripts/deploy.sh
@@ -149,7 +164,7 @@ jobs:
       - name: Roll production back if its smoke tests failed
         if: ${{ failure() && github.ref == 'refs/heads/main' && steps.production.outcome == 'success' }}
         env:
-          KUBECONFIG_B64: ${{ secrets.KUBECONFIG }}
+          KUBECONFIG_B64: ${{ steps.target.outputs.have_kubeconfig == 'true' && secrets.KUBECONFIG || '' }}
           ENVIRONMENT: production
         run: ./scripts/rollback.sh
 
