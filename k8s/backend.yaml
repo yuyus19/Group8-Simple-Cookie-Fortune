@@ -7,11 +7,12 @@ metadata:
     app.kubernetes.io/name: backend
     app.kubernetes.io/part-of: cookie-fortune
 spec:
-  # Deliberately 1. The backend keeps fortunes in an in-memory map (see
-  # backend/main.go, datastoreDefault) whenever REDIS_DNS is unset, so every
-  # replica would own a different set and POST /fortunes would land on
-  # whichever pod the Service happened to pick. Scale this only after the
-  # database exercise gives it shared state.
+  # Still deliberately 1, even now that Redis is here. Writes do go to Redis,
+  # but List() in backend/main.go still answers GET /fortunes straight from
+  # the in-memory map, and that map is only refilled in init() and in Get().
+  # A second replica would therefore serve a stale list until it happened to
+  # restart. The single redigo connection in foredis.go is not safe for
+  # concurrent use either. Scaling this needs an app fix, not a manifest one.
   replicas: 1
   selector:
     matchLabels:
@@ -22,6 +23,19 @@ spec:
         app.kubernetes.io/name: backend
         app.kubernetes.io/part-of: cookie-fortune
     spec:
+      # Compose can say "wait until Redis is healthy". Kubernetes cannot order
+      # pods, and this particular race is silent rather than loud: init() in
+      # foredis.go retries for about ten seconds, then gives up for good and
+      # serves from the in-memory map without ever crashing. So the kubelet
+      # would never restart it, and the cookies would keep vanishing with no
+      # error anywhere. An init container is what actually holds it back.
+      initContainers:
+        - name: wait-for-redis
+          image: redis:7.2-alpine
+          command:
+            - sh
+            - -c
+            - until redis-cli -h redis -p 6379 ping; do echo "waiting for redis..."; sleep 2; done
       containers:
         - name: backend
           image: docker.io/jimdaf/cookie-fortune-group08-backend:latest
@@ -32,6 +46,12 @@ spec:
           ports:
             - name: http
               containerPort: 9000
+          env:
+            # "redis" is the Service name in k8s/redis.yaml. Setting this is
+            # the entire fix for 04-database: foredis.go checks for it and
+            # only then talks to Redis instead of its in-memory map.
+            - name: REDIS_DNS
+              value: redis
           # The backend has no /healthz, so a real endpoint stands in. This
           # mirrors the healthcheck already in docker-compose.yml.
           readinessProbe:

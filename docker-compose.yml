@@ -9,6 +9,19 @@ services:
     restart: unless-stopped
     expose:
       - "9000"
+    environment:
+      # This one variable is the whole bug. backend/foredis.go only opens a
+      # Redis connection when REDIS_DNS is set. Without it the backend keeps
+      # fortunes in a plain Go map, so every redeploy starts from scratch.
+      REDIS_DNS: redis
+    depends_on:
+      # Has to be service_healthy, not just started. init() in foredis.go
+      # tries five times over about ten seconds and then gives up for good,
+      # quietly falling back to the in memory map instead of crashing. A
+      # backend that wins the race against Redis looks perfectly fine while
+      # dropping every write.
+      redis:
+        condition: service_healthy
     healthcheck:
       # The backend has no /healthz yet, so we use a real endpoint instead.
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:9000/fortunes"]
@@ -41,3 +54,22 @@ services:
       timeout: 3s
       retries: 5
       start_period: 5s
+
+  redis:
+    image: redis:7.2-alpine
+    restart: unless-stopped
+    # appendonly writes every change to disk as it happens. The default only
+    # snapshots now and then, so a crash can still lose the last few cookies.
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 3s
+
+volumes:
+  # A named volume, so the cookies outlive "docker compose down" as well.
+  redis-data:

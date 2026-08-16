@@ -114,8 +114,13 @@ log "applying manifests"
 "${KUBECTL[@]}" apply -f "$RENDER/"
 
 log "waiting for the rollouts"
-for d in backend frontend; do
-    "${KUBECTL[@]}" -n "$NAMESPACE" rollout status "deployment/$d" --timeout=180s
+# redis first. The backend has an init container that blocks until Redis
+# answers, so checking Redis first turns "backend timed out" into the more
+# useful "redis never became ready".
+for d in redis backend frontend; do
+    if "${KUBECTL[@]}" -n "$NAMESPACE" get "deployment/$d" >/dev/null 2>&1; then
+        "${KUBECTL[@]}" -n "$NAMESPACE" rollout status "deployment/$d" --timeout=180s
+    fi
 done
 
 log "deployed"
