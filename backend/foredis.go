@@ -40,6 +40,24 @@ func init() {
 		return
 	}
 
+	// A Redis that has never been written to has no "fortunes" hash at all.
+	// Falling through to the loop below would swap the built in fortunes for
+	// an empty map, which is why a freshly deployed environment served
+	// nothing until somebody posted a fortune by hand. Seed Redis from the
+	// built in set instead, and return with datastoreDefault left alone --
+	// it already holds exactly what was just written.
+	if len(resKeys) == 0 {
+		fmt.Printf("*** redis has no fortunes, seeding it with the built in set\n")
+		for id, f := range datastoreDefault.m {
+			if _, err := dbLink.Do("hset", "fortunes", id, f.Message); err != nil {
+				fmt.Println("redis hset failed", err.Error())
+				return
+			}
+			fmt.Printf("seeded %s => %s\n", id, f.Message)
+		}
+		return
+	}
+
 	datastoreDefault = datastore{m: map[string]fortune{}, RWMutex: &sync.RWMutex{}}
 	fmt.Printf("*** loading redis fortunes:\n")
 	for _, key := range resKeys {
