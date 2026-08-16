@@ -26,6 +26,14 @@ on:
       - main
       - 'cd-**'
   workflow_dispatch:
+    inputs:
+      soft_fail:
+        description: >-
+          Run the smoke tests without letting them fail the deploy. Off by
+          default, so a broken deploy stops here rather than being announced
+          as a success.
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -70,9 +78,18 @@ jobs:
           IMAGE_TAG: latest
         run: ./scripts/deploy.sh
 
-      - name: Check the deployed app answers
+      - name: Smoke test the deployment
         env:
           NS: ${{ steps.deploy.outputs.namespace }}
+          # A tollgate by default. The exercise asks whether this should block
+          # or merely inform, and blocking is the right default here: these
+          # tests only fail when the app is genuinely broken, and shipping a
+          # broken deploy is worse than a red build. The workflow_dispatch
+          # input exists for the times you need to deploy anyway and look at
+          # the failures afterwards.
+          SOFT_FAIL: ${{ inputs.soft_fail && 'true' || 'false' }}
+          BASE_URL: http://localhost:18080
+          WAIT_SECONDS: "90"
         run: |
           # A port forward works the same against kind and against a real
           # remote cluster, unlike a NodePort which needs network access to
@@ -81,15 +98,7 @@ jobs:
           PF=$!
           trap 'kill $PF 2>/dev/null || true' EXIT
 
-          for i in $(seq 1 30); do
-            if curl -fsS http://localhost:18080/healthz >/dev/null 2>&1; then
-              break
-            fi
-            sleep 2
-          done
-
-          echo "healthz: $(curl -fsS http://localhost:18080/healthz)"
-          echo "random:  $(curl -fsS http://localhost:18080/api/random)"
+          ./scripts/smoke-test.sh
 
       - name: Show what was deployed
         if: always()
