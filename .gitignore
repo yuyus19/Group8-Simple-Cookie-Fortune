@@ -3,3 +3,13 @@ backend/backend
 
 # frontend binary
 frontend/frontend
+
+# local secrets, never commit this
+.env
+
+# real kubeconfigs hold a private key that grants cluster access.
+# k8s/kubeconfig.example is the placeholder version and is safe to commit.
+kubeconfig
+kubeconfig.yaml
+*.kubeconfig
+.kube/
