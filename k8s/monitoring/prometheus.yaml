@@ -146,10 +146,17 @@ metadata:
   labels:
     app.kubernetes.io/name: prometheus
 spec:
-  type: ClusterIP
+  # NodePort for the same reason as Grafana: so the Prometheus UI, and
+  # especially Status then Targets, can be opened without a port forward.
+  #
+  # Grafana does not need this. It reaches Prometheus in cluster at
+  # http://prometheus:9090, which works either way. This is purely so a human
+  # can browse it.
+  type: NodePort
   selector:
     app.kubernetes.io/name: prometheus
   ports:
     - name: http
       port: 9090
       targetPort: http
+      nodePort: 30090

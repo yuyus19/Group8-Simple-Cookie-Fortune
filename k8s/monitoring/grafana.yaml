@@ -172,10 +172,19 @@ metadata:
   labels:
     app.kubernetes.io/name: grafana
 spec:
-  type: ClusterIP
+  # NodePort rather than ClusterIP so the dashboard opens straight in a
+  # browser. As a ClusterIP it was only reachable from inside the cluster,
+  # which meant everyone had to keep a "kubectl port-forward" running in a
+  # spare terminal just to look at a graph.
+  #
+  # Fine for a local exercise cluster. On a real one you would keep Grafana
+  # internal and put it behind an ingress with actual authentication, since
+  # the admin password below is admin.
+  type: NodePort
   selector:
     app.kubernetes.io/name: grafana
   ports:
     - name: http
       port: 3000
       targetPort: http
+      nodePort: 30300
