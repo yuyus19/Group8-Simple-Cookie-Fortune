@@ -1,0 +1,181 @@
+# Grafana, pre-wired to the Prometheus next door and with a dashboard for the
+# fortune metrics already loaded.
+#
+#   kubectl apply -f k8s/monitoring/
+#   kubectl -n monitoring port-forward svc/grafana 3000:3000
+#   open http://localhost:3000 and log in with admin / admin
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: monitoring
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        access: proxy
+        # The Service name, resolved by cluster DNS inside this namespace.
+        url: http://prometheus:9090
+        isDefault: true
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-provider
+  namespace: monitoring
+data:
+  provider.yaml: |
+    apiVersion: 1
+    providers:
+      - name: fortune
+        folder: ""
+        type: file
+        options:
+          path: /var/lib/grafana/dashboards
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+  namespace: monitoring
+data:
+  fortune-cookie.json: |
+    {
+      "title": "Simple Fortune Cookie",
+      "uid": "fortune-cookie",
+      "timezone": "browser",
+      "refresh": "10s",
+      "time": { "from": "now-30m", "to": "now" },
+      "panels": [
+        {
+          "type": "stat",
+          "title": "Cookies stored",
+          "gridPos": { "h": 5, "w": 6, "x": 0, "y": 0 },
+          "targets": [
+            { "expr": "max(fortune_cookies_stored)", "legendFormat": "cookies" }
+          ]
+        },
+        {
+          "type": "stat",
+          "title": "Redis connected",
+          "gridPos": { "h": 5, "w": 6, "x": 6, "y": 0 },
+          "targets": [
+            { "expr": "min(fortune_redis_up)", "legendFormat": "redis up" }
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "Requests per second by handler",
+          "gridPos": { "h": 9, "w": 12, "x": 12, "y": 0 },
+          "targets": [
+            {
+              "expr": "sum by (handler) (rate(fortune_http_requests_total[1m]))",
+              "legendFormat": "{{handler}}"
+            }
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "Backend failures seen by the frontend",
+          "gridPos": { "h": 9, "w": 12, "x": 0, "y": 5 },
+          "targets": [
+            {
+              "expr": "sum by (action) (rate(fortune_backend_failures_total[1m]))",
+              "legendFormat": "{{action}}"
+            }
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "95th percentile latency",
+          "gridPos": { "h": 9, "w": 12, "x": 12, "y": 9 },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.95, sum by (le, handler) (rate(fortune_http_request_duration_seconds_bucket[5m])))",
+              "legendFormat": "{{handler}}"
+            }
+          ]
+        }
+      ]
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: grafana
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: grafana
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: grafana
+    spec:
+      containers:
+        - name: grafana
+          image: grafana/grafana:11.1.0
+          env:
+            # Fine for a local exercise cluster. Anything real would take
+            # these from a Secret instead.
+            - name: GF_SECURITY_ADMIN_USER
+              value: admin
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              value: admin
+            - name: GF_AUTH_ANONYMOUS_ENABLED
+              value: "true"
+          ports:
+            - name: http
+              containerPort: 3000
+          volumeMounts:
+            - name: datasources
+              mountPath: /etc/grafana/provisioning/datasources
+            - name: dashboard-provider
+              mountPath: /etc/grafana/provisioning/dashboards
+            - name: dashboards
+              mountPath: /var/lib/grafana/dashboards
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+      volumes:
+        - name: datasources
+          configMap:
+            name: grafana-datasources
+        - name: dashboard-provider
+          configMap:
+            name: grafana-dashboard-provider
+        - name: dashboards
+          configMap:
+            name: grafana-dashboards
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: grafana
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: grafana
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http

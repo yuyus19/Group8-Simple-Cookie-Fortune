@@ -15,12 +15,17 @@ on:
     branches:
       - main
       - 'ci/**'
+      # cd.yml deploys the image built from the exact commit it is running
+      # on, so those branches need their images pushed too.
+      - 'cd-**'
   pull_request:
     branches:
       - main
 
 permissions:
   contents: read
+  # Lets Trivy upload its findings to the Security tab.
+  security-events: write
 
 env:
   # Docker Hub only allows one level of naming under an account, so the two
@@ -86,10 +91,52 @@ jobs:
         with:
           context: ./${{ matrix.service }}
           push: ${{ github.event_name != 'pull_request' }}
+          # Load it into the local docker so Trivy can scan the exact image
+          # that was just built, including on pull requests where nothing is
+          # pushed anywhere.
+          load: ${{ github.event_name == 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Work out one tag to scan
+        id: scan_target
+        run: |
+          # metadata-action emits several tags, one per line. Trivy wants one.
+          echo "image=$(echo '${{ steps.meta.outputs.tags }}' | head -1)" >> "$GITHUB_OUTPUT"
+
+      - name: Scan the image with Trivy
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ steps.scan_target.outputs.image }}
+          format: sarif
+          output: trivy-${{ matrix.service }}.sarif
+          severity: HIGH,CRITICAL
+          # Report only. The base images are ours to patch on our own
+          # schedule, and a new CVE published overnight should not block a
+          # deploy that fixes something else. The findings still land in the
+          # Security tab where they can be looked at.
+          exit-code: "0"
+          ignore-unfixed: true
+
+      - name: Upload the Trivy findings
+        uses: github/codeql-action/upload-sarif@v3
+        # Runs even if the scan step failed, so a broken scan is visible.
+        if: ${{ always() }}
+        with:
+          sarif_file: trivy-${{ matrix.service }}.sarif
+          category: trivy-${{ matrix.service }}
+
+      - name: Show the findings in the log as well
+        if: ${{ always() }}
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ steps.scan_target.outputs.image }}
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: "0"
+          ignore-unfixed: true
 
   pull-and-verify:
     name: Pull from Docker Hub and run it

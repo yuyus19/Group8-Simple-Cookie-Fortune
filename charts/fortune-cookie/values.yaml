@@ -1,0 +1,93 @@
+# Defaults for the fortune-cookie chart.
+#
+# Everything that differed between the plain manifests in k8s/ lives here, so
+# the two nearly identical Deployments became one template plus this file.
+
+image:
+  registry: docker.io
+  namespace: jimdaf
+  # The chart builds "<registry>/<namespace>/<base>-<service>:<tag>", so the
+  # backend becomes docker.io/jimdaf/cookie-fortune-group08-backend:latest
+  base: cookie-fortune-group08
+  tag: latest
+  # Always, because the tag moves. Pin a sha- tag and this can be IfNotPresent.
+  pullPolicy: Always
+
+# Rolling updates for every service. maxUnavailable 0 keeps the full replica
+# count serving during a release.
+rollingUpdate:
+  maxSurge: 1
+  maxUnavailable: 0
+
+revisionHistoryLimit: 5
+
+# Adds the prometheus.io scrape annotations to the pods.
+metrics:
+  enabled: true
+
+# The two application services. Adding a third one here is all it would take
+# to deploy it, which is the point of templating this.
+services:
+  backend:
+    replicas: 2
+    port: 9000
+    probePath: /healthz
+    # The backend gives up on Redis about ten seconds after start and then
+    # silently runs from memory, so it must not start first.
+    waitForRedis: true
+    service:
+      type: ClusterIP
+    env:
+      REDIS_DNS: redis
+    resources:
+      requests:
+        cpu: 10m
+        memory: 16Mi
+      limits:
+        memory: 64Mi
+
+  frontend:
+    replicas: 3
+    port: 8080
+    probePath: /healthz
+    waitForRedis: false
+    service:
+      type: NodePort
+      nodePort: 30080
+    env:
+      BACKEND_DNS: backend
+      BACKEND_PORT: "9000"
+    resources:
+      requests:
+        cpu: 10m
+        memory: 16Mi
+      limits:
+        memory: 64Mi
+
+redis:
+  enabled: true
+  image: redis:7.2-alpine
+  port: 6379
+  # Persistence is the whole reason Redis is here. Turning this off makes the
+  # cookies disappear on a pod restart again.
+  persistence:
+    enabled: true
+    size: 1Gi
+    # Leave empty to use the cluster default StorageClass.
+    storageClass: ""
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 256Mi
+
+# Applied to the app containers. Matches the "adduser -D -u 10001 app" in both
+# Dockerfiles: Kubernetes can only verify a numeric uid, so it has to be
+# restated here rather than relying on USER app.
+securityContext:
+  runAsUser: 10001
+  runAsNonRoot: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]

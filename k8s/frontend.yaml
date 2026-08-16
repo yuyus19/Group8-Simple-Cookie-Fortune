@@ -8,7 +8,15 @@ metadata:
     app.kubernetes.io/part-of: cookie-fortune
 spec:
   # The frontend holds no state, so this one is safe to scale.
-  replicas: 2
+  replicas: 3
+  revisionHistoryLimit: 5
+  strategy:
+    # maxUnavailable 0 keeps the full replica count serving throughout a
+    # release, so "make deploy" during a demo does not drop requests.
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app.kubernetes.io/name: frontend
@@ -17,6 +25,10 @@ spec:
       labels:
         app.kubernetes.io/name: frontend
         app.kubernetes.io/part-of: cookie-fortune
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
     spec:
       containers:
         - name: frontend
@@ -33,12 +45,11 @@ spec:
               value: backend
             - name: BACKEND_PORT
               value: "9000"
-          # Compose could express "do not start until the backend is healthy".
-          # Kubernetes has no such ordering: pods start in any order, and the
-          # frontend's handlers call log.Fatalln() when the backend is missing,
-          # which kills the process. The fix is not ordering but restarts -- the
-          # kubelet restarts the container until the backend answers. Expect a
-          # few CrashLoopBackOff cycles on a cold start; it converges.
+          # This used to warn about CrashLoopBackOff on a cold start, because
+          # the handlers called log.Fatalln() when the backend was missing and
+          # killed the whole process. 05-bon-appetit asked for that to be
+          # handled properly, so they now answer 502 and stay up. Pod start
+          # order no longer matters and no init container is needed here.
           readinessProbe:
             httpGet:
               path: /healthz

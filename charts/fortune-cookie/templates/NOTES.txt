@@ -1,0 +1,32 @@
+{{ .Chart.Name }} {{ .Chart.Version }} is installed as "{{ .Release.Name }}" in namespace {{ .Release.Namespace }}.
+
+Images deployed:
+{{- range $name, $svc := .Values.services }}
+  {{ $name }}: {{ include "fortune-cookie.image" (dict "root" $ "service" $name) }} x{{ $svc.replicas }}
+{{- end }}
+{{- if .Values.redis.enabled }}
+  redis:   {{ .Values.redis.image }}{{ if .Values.redis.persistence.enabled }} with a {{ .Values.redis.persistence.size }} volume{{ else }} WITHOUT persistence, cookies will be lost on restart{{ end }}
+{{- end }}
+
+Reach the frontend:
+
+{{- $fe := .Values.services.frontend }}
+{{- if eq $fe.service.type "NodePort" }}
+  On kind, k8s/kind-cluster.yaml maps node port {{ $fe.service.nodePort }} to localhost:8081
+
+    http://localhost:8081
+
+  Anywhere else, port forward instead:
+
+    kubectl -n {{ .Release.Namespace }} port-forward svc/frontend 8080:{{ $fe.port }}
+{{- else }}
+    kubectl -n {{ .Release.Namespace }} port-forward svc/frontend 8080:{{ $fe.port }}
+{{- end }}
+
+Check it works:
+
+    BASE_URL=http://localhost:8080 ./scripts/smoke-test.sh
+
+Roll back if it does not:
+
+    helm rollback {{ .Release.Name }} --namespace {{ .Release.Namespace }}

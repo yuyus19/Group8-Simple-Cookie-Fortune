@@ -7,13 +7,23 @@ metadata:
     app.kubernetes.io/name: backend
     app.kubernetes.io/part-of: cookie-fortune
 spec:
-  # Still deliberately 1, even now that Redis is here. Writes do go to Redis,
-  # but List() in backend/main.go still answers GET /fortunes straight from
-  # the in-memory map, and that map is only refilled in init() and in Get().
-  # A second replica would therefore serve a stale list until it happened to
-  # restart. The single redigo connection in foredis.go is not safe for
-  # concurrent use either. Scaling this needs an app fix, not a manifest one.
-  replicas: 1
+  # 2 replicas, which only became safe once the app was fixed. List() now
+  # reads through to Redis on every call instead of answering from a private
+  # in-memory map, and foredis.go uses a connection pool rather than one
+  # shared connection that was never safe for concurrent use. Both replicas
+  # therefore see the same fortunes.
+  replicas: 2
+  # Keep enough old ReplicaSets around for scripts/rollback.sh to have
+  # somewhere to roll back to.
+  revisionHistoryLimit: 5
+  strategy:
+    # Rolling, so a release never takes the service down. maxUnavailable 0
+    # means the new pod has to pass its readiness probe before an old one is
+    # removed, so there is always at least one backend answering.
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app.kubernetes.io/name: backend
@@ -22,6 +32,11 @@ spec:
       labels:
         app.kubernetes.io/name: backend
         app.kubernetes.io/part-of: cookie-fortune
+      annotations:
+        # How the Prometheus in k8s/monitoring finds this pod.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9000"
+        prometheus.io/path: /metrics
     spec:
       # Compose can say "wait until Redis is healthy". Kubernetes cannot order
       # pods, and this particular race is silent rather than loud: init() in
@@ -52,18 +67,23 @@ spec:
             # only then talks to Redis instead of its in-memory map.
             - name: REDIS_DNS
               value: redis
-          # The backend has no /healthz, so a real endpoint stands in. This
-          # mirrors the healthcheck already in docker-compose.yml.
+          # The backend has a real /healthz now, added test first in
+          # 05-bon-appetit, so the probes no longer have to borrow /fortunes.
+          #
+          # Worth knowing why both probes use it: /healthz deliberately does
+          # not check Redis. A liveness probe that failed when the database
+          # blipped would have the kubelet restart a perfectly healthy pod and
+          # turn a small Redis outage into a full application outage.
           readinessProbe:
             httpGet:
-              path: /fortunes
+              path: /healthz
               port: http
             initialDelaySeconds: 2
             periodSeconds: 5
             timeoutSeconds: 3
           livenessProbe:
             httpGet:
-              path: /fortunes
+              path: /healthz
               port: http
             initialDelaySeconds: 10
             periodSeconds: 10

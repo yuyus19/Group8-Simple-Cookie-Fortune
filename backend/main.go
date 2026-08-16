@@ -3,10 +3,13 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"math/rand"
 	"net/http"
 	"regexp"
 	"sync"
+
+	"github.com/gomodule/redigo/redis"
 )
 
 var (
@@ -58,13 +61,45 @@ func (h *fortuneHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// refreshFromRedis replaces the in-memory copy with what Redis currently
+// holds. Without this, List answered purely from memory, so a second replica
+// never saw fortunes written by the first one and the backend could not be
+// scaled past a single pod.
+func (h *fortuneHandler) refreshFromRedis() error {
+	values, err := redis.StringMap(redisDo("hgetall", "fortunes"))
+	if err != nil {
+		return err
+	}
+
+	fresh := make(map[string]fortune, len(values))
+	for id, msg := range values {
+		fresh[id] = fortune{ID: id, Message: msg}
+	}
+
+	h.store.Lock()
+	h.store.m = fresh
+	h.store.Unlock()
+	return nil
+}
+
 func (h *fortuneHandler) List(w http.ResponseWriter, r *http.Request) {
+	if usingRedis {
+		if err := h.refreshFromRedis(); err != nil {
+			// Reads degrade rather than fail. Serving the last known good copy
+			// is friendlier than a 503 when Redis blips, and the user still
+			// sees fortunes. Writes are the ones that must not lie, see Create.
+			fmt.Println("redis hgetall failed, serving the cached copy:", err.Error())
+		}
+	}
+
 	h.store.RLock()
 	fortunes := make([]fortune, 0, len(h.store.m))
 	for _, v := range h.store.m {
 		fortunes = append(fortunes, v)
 	}
 	h.store.RUnlock()
+
+	fortunesStored.Set(float64(len(fortunes)))
 
 	jsonBytes, err := json.Marshal(fortunes)
 	if err != nil {
@@ -102,12 +137,12 @@ func (h *fortuneHandler) Get(w http.ResponseWriter, r *http.Request) {
 
 	if usingRedis {
 		key := matches[1]
-		val, err := dbLink.Do("hget", "fortunes", key)
+		val, err := redisDo("hget", "fortunes", key)
 		if err != nil {
 			fmt.Println("redis hget failed", err.Error())
 		} else {
 			if val != nil {
-				msg := fmt.Sprintf("%s", val.([]byte))
+				msg := string(val.([]byte))
 				h.store.Lock()
 				h.store.m[key] = fortune{ID: key, Message: msg}
 				h.store.Unlock()
@@ -144,9 +179,20 @@ func (h *fortuneHandler) Create(w http.ResponseWriter, r *http.Request) {
 	h.store.Unlock()
 
 	if usingRedis {
-		_, err := dbLink.Do("hset", "fortunes", u.ID, u.Message)
-		if err != nil {
+		if _, err := redisDo("hset", "fortunes", u.ID, u.Message); err != nil {
 			fmt.Println("redis hset failed", err.Error())
+
+			// This is the "database becomes unavailable" case from
+			// 05-bon-appetit. It used to log the error and still answer 200,
+			// so the customer was told their cookie was saved when it only
+			// ever existed in memory and would vanish on the next restart.
+			// Roll the memory write back and say plainly that it failed.
+			h.store.Lock()
+			delete(h.store.m, u.ID)
+			h.store.Unlock()
+
+			serviceUnavailable(w, r)
+			return
 		}
 	}
 
@@ -169,14 +215,38 @@ func notFound(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("not found"))
 }
 
+func serviceUnavailable(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusServiceUnavailable)
+	w.Write([]byte("the fortune store is unavailable, please try again"))
+}
+
+// HealthzHandler answers the liveness probe.
+//
+// It deliberately does not touch Redis. The process is alive and can still
+// serve reads when the database is having a bad day, and a liveness probe that
+// failed on a Redis blip would have Kubernetes restart a perfectly good pod,
+// turning a small database outage into a full application outage.
+func HealthzHandler(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	io.WriteString(w, "healthy")
+}
+
 func main() {
 	mux := http.NewServeMux()
 	fortuneH := &fortuneHandler{
 		store: &datastoreDefault,
 	}
-	mux.Handle("/fortunes", fortuneH)
-	mux.Handle("/fortunes/", fortuneH)
+	mux.Handle("/fortunes", instrument("fortunes", fortuneH))
+	mux.Handle("/fortunes/", instrument("fortunes", fortuneH))
+	mux.Handle("/healthz", instrument("healthz", http.HandlerFunc(HealthzHandler)))
+	mux.Handle("/metrics", metricsHandler())
+
+	if usingRedis {
+		redisUp.Set(1)
+	} else {
+		redisUp.Set(0)
+	}
 
 	err := http.ListenAndServe(":9000", mux)
-    fmt.Printf("%v\n", err)
+	fmt.Printf("%v\n", err)
 }
