@@ -142,7 +142,7 @@ func (h *fortuneHandler) Get(w http.ResponseWriter, r *http.Request) {
 			fmt.Println("redis hget failed", err.Error())
 		} else {
 			if val != nil {
-				msg := fmt.Sprintf("%s", val.([]byte))
+				msg := string(val.([]byte))
 				h.store.Lock()
 				h.store.m[key] = fortune{ID: key, Message: msg}
 				h.store.Unlock()
