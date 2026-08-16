@@ -43,6 +43,11 @@ on:
 permissions:
   contents: read
 
+env:
+  # Same values publish.yml uses, so this deploys what that workflow built.
+  IMAGE_NAMESPACE: jimdaf
+  IMAGE_BASE: cookie-fortune-group08
+
 jobs:
   deploy:
     name: Deploy and verify
@@ -87,6 +92,31 @@ jobs:
           cluster_name: fortune-cookie
           config: k8s/kind-cluster.yaml
 
+      - name: Work out which image tag to deploy
+        id: image
+        run: |
+          # Deploy the image built from this exact commit rather than :latest.
+          # :latest is whatever main last pushed, so on a branch it can easily
+          # be older than the manifests being deployed, and probes pointing at
+          # an endpoint the old image does not have will never go ready.
+          TAG="sha-${GITHUB_SHA::7}"
+          BASE="docker.io/${{ env.IMAGE_NAMESPACE }}/${{ env.IMAGE_BASE }}"
+
+          # publish.yml runs in parallel with this one, so give it time to
+          # finish pushing before giving up and using latest.
+          for i in $(seq 1 60); do
+            if docker manifest inspect "$BASE-backend:$TAG"  >/dev/null 2>&1 \
+            && docker manifest inspect "$BASE-frontend:$TAG" >/dev/null 2>&1; then
+              echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+              echo "deploying $TAG"
+              exit 0
+            fi
+            sleep 10
+          done
+
+          echo "::warning title=Falling back to latest::No $TAG image appeared within ten minutes, deploying latest instead."
+          echo "tag=latest" >> "$GITHUB_OUTPUT"
+
       # ---------------------------------------------------------- staging ---
 
       - name: Deploy to staging
@@ -94,7 +124,7 @@ jobs:
         env:
           KUBECONFIG_B64: ${{ steps.target.outputs.have_kubeconfig == 'true' && secrets.KUBECONFIG || '' }}
           ENVIRONMENT: staging
-          IMAGE_TAG: latest
+          IMAGE_TAG: ${{ steps.image.outputs.tag }}
         run: ./scripts/deploy.sh
 
       - name: Smoke test staging
@@ -142,7 +172,7 @@ jobs:
         env:
           KUBECONFIG_B64: ${{ steps.target.outputs.have_kubeconfig == 'true' && secrets.KUBECONFIG || '' }}
           ENVIRONMENT: production
-          IMAGE_TAG: latest
+          IMAGE_TAG: ${{ steps.image.outputs.tag }}
         run: ./scripts/deploy.sh
 
       - name: Smoke test production

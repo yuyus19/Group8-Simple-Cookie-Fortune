@@ -15,6 +15,9 @@ on:
     branches:
       - main
       - 'ci/**'
+      # cd.yml deploys the image built from the exact commit it is running
+      # on, so those branches need their images pushed too.
+      - 'cd-**'
   pull_request:
     branches:
       - main
