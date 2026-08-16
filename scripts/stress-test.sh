@@ -68,6 +68,17 @@ if [ -z "$AVAILABILITY" ]; then
     exit 0
 fi
 
+# Zero hits means siege never reached the target at all, which is a broken
+# test rather than a slow application. Saying so is better than reporting
+# "0.00 percent availability" as though the app had fallen over.
+HITS="$(grep -iE 'transactions' "$OUTPUT" | grep -oE '[0-9]+' | head -1)"
+if [ "${HITS:-0}" -eq 0 ]; then
+    die "siege made no successful requests at all, so it could not reach $TARGET.
+     If this is running against a kubectl port forward, the forward has to be
+     started with --address 0.0.0.0, because the container cannot see a
+     127.0.0.1 binding on the host."
+fi
+
 log "availability $AVAILABILITY percent, threshold $FAIL_UNDER"
 
 # bash cannot compare decimals, so scale to whole numbers instead of shelling

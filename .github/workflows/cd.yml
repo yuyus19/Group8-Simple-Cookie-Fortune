@@ -154,7 +154,12 @@ jobs:
           CONCURRENT: "25"
           DURATION: 20S
         run: |
-          kubectl -n "$NS" port-forward svc/frontend 18081:8080 &
+          # --address 0.0.0.0 matters here. port-forward binds 127.0.0.1 by
+          # default, and siege runs in a container, which reaches the runner
+          # over the docker bridge rather than through its own loopback. With
+          # the default binding the load test quietly scored zero hits at
+          # 0.00 percent availability instead of testing anything.
+          kubectl -n "$NS" port-forward --address 0.0.0.0 svc/frontend 18081:8080 &
           PF=$!
           trap 'kill $PF 2>/dev/null || true' EXIT
           sleep 3
