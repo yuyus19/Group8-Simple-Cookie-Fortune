@@ -2,7 +2,10 @@ services:
   backend:
     build:
       context: ./backend
-    image: simple-fortune-backend:1.0.0
+    # Naming the registry image here means "docker compose pull" fetches the
+    # one our workflow published instead of quietly reusing a local build.
+    # Set TAG to pin an exact build, for example TAG=sha-1a2b3c4.
+    image: ghcr.io/yuyus19/cookie-fortune-group08/backend:${TAG:-latest}
     restart: unless-stopped
     expose:
       - "9000"
@@ -17,7 +20,7 @@ services:
   frontend:
     build:
       context: ./frontend
-    image: simple-fortune-frontend:1.0.0
+    image: ghcr.io/yuyus19/cookie-fortune-group08/frontend:${TAG:-latest}
     restart: unless-stopped
     ports:
       - "8080:8080"

@@ -1,0 +1,123 @@
+name: Publish images
+
+# Ships both services to the GitHub Container Registry.
+# GHCR is used instead of Docker Hub because it needs no extra secrets. The
+# GITHUB_TOKEN that every run already gets is enough, as long as the job asks
+# for the packages write permission below.
+
+on:
+  push:
+    branches:
+      - main
+      - 'ci/**'
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_BASE: cookie-fortune-group08
+
+jobs:
+  publish:
+    name: Build and push ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - backend
+          - frontend
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to the container registry
+        # Pull requests from a fork only get a read only token, so there is
+        # nothing to log in for. Those runs still build, they just do not push.
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Work out the image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_BASE }}/${{ matrix.service }}
+          tags: |
+            type=sha,prefix=sha-,format=short
+            type=ref,event=branch
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./${{ matrix.service }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  pull-and-verify:
+    name: Pull from the registry and run it
+    needs: publish
+    # Nothing was pushed on a pull request, so there is nothing to pull back.
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Log in to the container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Work out the tag that was just pushed
+        id: tag
+        run: echo "value=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Pull the images we just published
+        env:
+          TAG: ${{ steps.tag.outputs.value }}
+        run: docker compose pull
+
+      - name: Start the pulled images
+        env:
+          TAG: ${{ steps.tag.outputs.value }}
+        # --no-build is the whole point of this job. It proves the app runs
+        # from what the registry holds and not from a local build.
+        run: docker compose up -d --no-build --wait
+
+      - name: Check the app answers
+        run: |
+          curl -fsS http://localhost:8080/healthz
+          echo
+          curl -fsS http://localhost:8080/api/random
+          echo
+
+      - name: Show what is running
+        env:
+          TAG: ${{ steps.tag.outputs.value }}
+        run: docker compose ps
+
+      - name: Stop everything
+        if: always()
+        env:
+          TAG: ${{ steps.tag.outputs.value }}
+        run: docker compose down
