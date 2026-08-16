@@ -1,0 +1,101 @@
+name: CD
+
+# Continuous delivery. Takes the images that publish.yml pushed to Docker Hub
+# and puts them on a Kubernetes cluster.
+#
+# Which cluster depends on whether a KUBECONFIG secret exists:
+#
+#   secret set     deploy to that cluster, which is the real thing the
+#                  exercise describes
+#   secret absent  create a throwaway kind cluster inside the runner and
+#                  deploy there instead, so the script is still exercised
+#                  end to end on every push
+#
+# Adding the secret later switches it over with no change to this file. To
+# create it, run this on a machine that can reach the cluster:
+#
+#   cat ~/.kube/config | base64 -w0
+#
+# and save the output as a repository secret called KUBECONFIG. The cluster
+# has to be reachable from the internet for that path to work, so a local
+# Docker Desktop or kind cluster will not do.
+
+on:
+  push:
+    branches:
+      - main
+      - 'cd-**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy to Kubernetes
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Work out which cluster to use
+        id: target
+        env:
+          KUBECONFIG_SECRET: ${{ secrets.KUBECONFIG }}
+        run: |
+          if [ -n "$KUBECONFIG_SECRET" ]; then
+            echo "have_kubeconfig=true" >> "$GITHUB_OUTPUT"
+            echo "Deploying to the cluster in the KUBECONFIG secret."
+          else
+            echo "have_kubeconfig=false" >> "$GITHUB_OUTPUT"
+            echo "No KUBECONFIG secret, so a kind cluster will be created here."
+          fi
+
+      - name: Create a throwaway kind cluster
+        if: ${{ steps.target.outputs.have_kubeconfig == 'false' }}
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: fortune-cookie
+          config: k8s/kind-cluster.yaml
+
+      - name: Deploy
+        id: deploy
+        env:
+          # Empty when the secret does not exist, and the script then falls
+          # back to whatever context kubectl already has, which is the kind
+          # cluster created above.
+          KUBECONFIG_B64: ${{ secrets.KUBECONFIG }}
+          BRANCH: ${{ github.ref_name }}
+          IMAGE_TAG: latest
+        run: ./scripts/deploy.sh
+
+      - name: Check the deployed app answers
+        env:
+          NS: ${{ steps.deploy.outputs.namespace }}
+        run: |
+          # A port forward works the same against kind and against a real
+          # remote cluster, unlike a NodePort which needs network access to
+          # the nodes themselves.
+          kubectl -n "$NS" port-forward svc/frontend 18080:8080 &
+          PF=$!
+          trap 'kill $PF 2>/dev/null || true' EXIT
+
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:18080/healthz >/dev/null 2>&1; then
+              break
+            fi
+            sleep 2
+          done
+
+          echo "healthz: $(curl -fsS http://localhost:18080/healthz)"
+          echo "random:  $(curl -fsS http://localhost:18080/api/random)"
+
+      - name: Show what was deployed
+        if: always()
+        env:
+          NS: ${{ steps.deploy.outputs.namespace }}
+        run: |
+          echo "environment: ${{ steps.deploy.outputs.environment }}"
+          echo "namespace:   $NS"
+          kubectl -n "$NS" get deployments,services,pods -o wide || true
